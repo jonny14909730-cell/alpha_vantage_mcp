@@ -1,6 +1,7 @@
 import functools
 import inspect
-from typing import get_type_hints, Any
+from types import UnionType
+from typing import Union, get_args, get_origin, get_type_hints, Any
 
 from av_api.registry import extract_description
 
@@ -43,17 +44,27 @@ def setup_custom_tool_decorator(mcp):
                             arg_descriptions[arg_name.strip()] = arg_desc.strip()
 
             def get_type_schema(type_hint: Any):
-                # Basic type mapping (simplified version)
+                origin = get_origin(type_hint)
                 if type_hint is int:
                     return {'type': 'integer'}
-                elif type_hint is float:
+                if type_hint is float:
                     return {'type': 'number'}
-                elif type_hint is bool:
+                if type_hint is bool:
                     return {'type': 'boolean'}
-                elif type_hint is str:
+                if type_hint is str:
                     return {'type': 'string'}
-                else:
-                    return {'type': 'string'}  # Default
+                if type_hint is dict or origin is dict:
+                    return {'type': 'object', 'additionalProperties': True}
+                if type_hint is list or origin is list:
+                    args = get_args(type_hint) if origin is list else ()
+                    item_schema = get_type_schema(args[0]) if args else {'type': 'string'}
+                    return {'type': 'array', 'items': item_schema}
+                if origin is Union or origin is UnionType:
+                    args = [arg for arg in get_args(type_hint) if arg is not type(None)]
+                    if len(args) == 1:
+                        return get_type_schema(args[0])
+                    return {'oneOf': [get_type_schema(arg) for arg in args]}
+                return {'type': 'string'}
 
             # Get function signature to check for default values
             sig = inspect.signature(func)
@@ -82,7 +93,12 @@ def setup_custom_tool_decorator(mcp):
             tool_schema = {
                 'name': tool_name,
                 'description': tool_description,
-                'inputSchema': {'type': 'object', 'properties': properties, 'required': required},
+                'inputSchema': {
+                    'type': 'object',
+                    'properties': properties,
+                    'required': required,
+                    'additionalProperties': False,
+                },
             }
             if annotations is not None:
                 # Convert Pydantic model to dict for JSON serialization compatibility

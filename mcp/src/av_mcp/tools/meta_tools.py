@@ -4,6 +4,7 @@ These tools allow LLMs to discover available tools without flooding
 the context window with full schemas upfront.
 """
 import json
+from av_api.errors import InvalidToolArgumentsError
 from av_mcp.tools.registry import get_tool_list, get_tool_schema, get_tool_schemas, call_tool
 
 
@@ -102,7 +103,7 @@ def tool_get(tool_name: str | list[str]) -> dict | list[dict]:
     return get_tool_schema(tool_name)
 
 
-def tool_call(tool_name: str, arguments: str) -> dict | str:
+def tool_call(tool_name: str, arguments: dict | str) -> dict | str:
     """
     Executes a named Alpha Vantage API tool with the provided arguments and returns its result.
 
@@ -115,7 +116,12 @@ def tool_call(tool_name: str, arguments: str) -> dict | str:
     """
     # Parse arguments if passed as JSON string
     if isinstance(arguments, str):
-        arguments = json.loads(arguments)
+        try:
+            arguments = json.loads(arguments)
+        except json.JSONDecodeError as exc:
+            raise InvalidToolArgumentsError(
+                f"Invalid arguments for TOOL_CALL: arguments is not valid JSON ({exc.msg})"
+            ) from exc
     result = call_tool(tool_name, arguments)
     # Ensure dicts are returned as JSON strings so the MCP framework
     # doesn't str() them into Python repr syntax

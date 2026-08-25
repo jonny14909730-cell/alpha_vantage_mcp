@@ -19,7 +19,10 @@ import mcp.types as types
 from mcp.server.lowlevel import NotificationOptions, Server
 from mcp.server.models import InitializationOptions
 
+from mcp.shared.exceptions import McpError
+
 from av_api.context import set_api_key
+from av_api.errors import InvalidToolArgumentsError, UnknownToolError, UpstreamTimeoutError
 from av_api.registry import (
     DATA_TOOL_ANNOTATIONS,
     DATA_TOOL_OUTPUT_SCHEMA,
@@ -29,9 +32,11 @@ from av_api.registry import (
     derive_tool_title,
     ensure_tools_loaded,
     extract_description,
+    validate_tool_arguments,
     _build_parameter_schema,
 )
 import av_mcp.common  # noqa: F401 — registers response processor for large responses
+from av_mcp.tool_errors import format_tool_error_text, log_known_tool_error
 from .tools.meta_tools import (
     META_TOOL_OPEN_WORLD_HINT,
     META_TOOL_OUTPUT_SCHEMA,
@@ -62,7 +67,8 @@ META_TOOLS = [
         inputSchema={
             "type": "object",
             "properties": {},
-            "required": []
+            "required": [],
+            "additionalProperties": False,
         },
         outputSchema=META_TOOL_OUTPUT_SCHEMA["TOOL_LIST"],
         annotations=_meta_annotations("TOOL_LIST"),
@@ -87,7 +93,8 @@ META_TOOLS = [
                     ]
                 }
             },
-            "required": ["tool_name"]
+            "required": ["tool_name"],
+            "additionalProperties": False,
         },
         outputSchema=META_TOOL_OUTPUT_SCHEMA["TOOL_GET"],
         annotations=_meta_annotations("TOOL_GET"),
@@ -107,7 +114,8 @@ META_TOOLS = [
                     "description": "Dictionary of arguments matching the tool's parameter schema"
                 }
             },
-            "required": ["tool_name", "arguments"]
+            "required": ["tool_name", "arguments"],
+            "additionalProperties": False,
         },
         outputSchema=META_TOOL_OUTPUT_SCHEMA["TOOL_CALL"],
         annotations=_meta_annotations("TOOL_CALL"),
@@ -163,6 +171,7 @@ class StdioMCPServer:
 
         # Register handlers
         self._register_handlers()
+        self._install_unknown_tool_guard()
 
     def _register_handlers(self):
         """Register MCP protocol handlers for the full tool catalog."""
@@ -172,7 +181,7 @@ class StdioMCPServer:
             """List all available Alpha Vantage tools."""
             return self.tools
 
-        @self.server.call_tool()
+        @self.server.call_tool(validate_input=False)
         async def handle_call_tool(
             name: str, arguments: dict[str, Any]
         ) -> tuple[list[types.TextContent], dict[str, Any]]:
@@ -180,21 +189,30 @@ class StdioMCPServer:
 
             Returns both unstructured text content and structuredContent matching the
             declared outputSchema (the lowlevel server validates the latter).
-            Exceptions propagate to the lowlevel handler, which renders an isError result.
+            Known ToolError subclasses propagate to the lowlevel handler, which renders
+            an isError result without structuredContent. Unexpected exceptions are logged
+            with traceback first.
             """
+            tool = next((item for item in self.tools if item.name == name), None)
             try:
+                if tool is not None:
+                    validate_tool_arguments(name, tool.inputSchema, arguments or {})
                 if name == "TOOL_LIST":
                     result = tool_list()
                 elif name == "TOOL_GET":
                     tool_name = arguments.get("tool_name")
                     if not tool_name:
-                        raise ValueError("tool_name is required")
+                        raise InvalidToolArgumentsError(
+                            "Invalid arguments for TOOL_GET: tool_name is required"
+                        )
                     result = tool_get(tool_name)
                 elif name == "TOOL_CALL":
                     tool_name = arguments.get("tool_name")
                     tool_args = arguments.get("arguments", {})
                     if not tool_name:
-                        raise ValueError("tool_name is required")
+                        raise InvalidToolArgumentsError(
+                            "Invalid arguments for TOOL_CALL: tool_name is required"
+                        )
                     result = tool_call(tool_name, tool_args)
                 else:
                     result = call_tool(name, arguments)
@@ -209,11 +227,32 @@ class StdioMCPServer:
                     else build_data_structured_content(result)
                 )
                 return content, structured
-            except Exception as e:
-                # Re-raise so the lowlevel server builds a proper isError CallToolResult
-                # instead of a text body that would fail outputSchema validation.
-                logger.error(f"Error calling tool {name}: {e}")
+            except (InvalidToolArgumentsError, UnknownToolError, UpstreamTimeoutError) as e:
+                log_known_tool_error(name, e)
+                # Re-raise so the lowlevel server builds isError without structuredContent.
+                # The shared formatter is ToolError.__str__.
                 raise
+            except Exception as e:
+                logger.exception(f"Unexpected error calling tool {name}: {format_tool_error_text(e)}")
+                raise
+
+    def _install_unknown_tool_guard(self):
+        """Unknown outer tools are JSON-RPC method-not-found, not execution errors."""
+        original = self.server.request_handlers[types.CallToolRequest]
+        listed_names = {tool.name for tool in self.tools}
+
+        async def guarded(req: types.CallToolRequest):
+            tool_name = req.params.name
+            if tool_name not in listed_names:
+                raise McpError(
+                    types.ErrorData(
+                        code=types.METHOD_NOT_FOUND,
+                        message=f"Tool '{tool_name}' not found",
+                    )
+                )
+            return await original(req)
+
+        self.server.request_handlers[types.CallToolRequest] = guarded
 
     async def run(self):
         """Run the low-level server"""

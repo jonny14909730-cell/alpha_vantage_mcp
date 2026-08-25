@@ -45,10 +45,14 @@ version = "0.1.0"
 source = { editable = "api" }
 dependencies = [
     { name = "httpx" },
+    { name = "jsonschema" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "httpx" }]
+requires-dist = [
+    { name = "httpx" },
+    { name = "jsonschema" },
+]
 
 [[package]]
 name = "annotated-types"

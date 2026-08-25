@@ -1,7 +1,7 @@
 import json
 from functools import lru_cache
 from importlib.resources import files
-from awslabs.mcp_lambda_handler import MCPLambdaHandler
+from av_mcp.tool_errors import ToolCallMCPLambdaHandler
 from loguru import logger
 from av_api.context import set_api_key
 from av_mcp.decorators import setup_custom_tool_decorator
@@ -163,9 +163,9 @@ def normalize_content_type_header(event):
         return
 
 
-def create_mcp_handler() -> MCPLambdaHandler:
+def create_mcp_handler() -> ToolCallMCPLambdaHandler:
     """Create and configure MCP handler with the full Alpha Vantage tool catalog."""
-    mcp = MCPLambdaHandler(name="alphavantage-mcp-server", version="1.0.0")
+    mcp = ToolCallMCPLambdaHandler(name="alphavantage-mcp-server", version="1.0.0")
 
     # Set up custom tool decorator for UPPER_SNAKE_CASE tool names
     setup_custom_tool_decorator(mcp)

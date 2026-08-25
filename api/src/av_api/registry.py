@@ -4,6 +4,10 @@ import functools
 import json
 from typing import Union, get_type_hints
 
+import jsonschema
+
+from av_api.errors import InvalidToolArgumentsError, UnknownToolError
+
 # Module names that should have entitlement parameter added
 _ENTITLEMENT_MODULES = {
     "core_stock_apis",
@@ -294,25 +298,25 @@ def _build_parameter_schema(func) -> dict:
         param_type = type_hints.get(param_name, str)
 
         # Convert Python types to JSON schema types
-        if param_type == str or param_type == 'str':
+        if param_type is str or param_type == 'str':
             schema_type = "string"
-        elif param_type == int or param_type == 'int':
+        elif param_type is int or param_type == 'int':
             schema_type = "integer"
-        elif param_type == float or param_type == 'float':
+        elif param_type is float or param_type == 'float':
             schema_type = "number"
-        elif param_type == bool or param_type == 'bool':
+        elif param_type is bool or param_type == 'bool':
             schema_type = "boolean"
         elif hasattr(param_type, '__origin__') and param_type.__origin__ is Union:
             args = param_type.__args__
             if len(args) == 2 and type(None) in args:
                 non_none_type = args[0] if args[1] is type(None) else args[1]
-                if non_none_type == str:
+                if non_none_type is str:
                     schema_type = "string"
-                elif non_none_type == int:
+                elif non_none_type is int:
                     schema_type = "integer"
-                elif non_none_type == float:
+                elif non_none_type is float:
                     schema_type = "number"
-                elif non_none_type == bool:
+                elif non_none_type is bool:
                     schema_type = "boolean"
                 else:
                     schema_type = "string"
@@ -341,7 +345,34 @@ def _build_parameter_schema(func) -> dict:
         "type": "object",
         "properties": properties,
         "required": required,
+        "additionalProperties": False,
     }
+
+
+def validate_tool_arguments(tool_name: str, schema: dict, arguments) -> None:
+    """Validate arguments against a tool's JSON schema before invocation.
+
+    Raises:
+        InvalidToolArgumentsError: If arguments are not an object or fail the schema.
+    """
+    if not isinstance(arguments, dict):
+        raise InvalidToolArgumentsError(
+            f"Invalid arguments for {tool_name}: arguments must be an object"
+        )
+    validator = jsonschema.Draft7Validator(schema)
+    errors = list(validator.iter_errors(arguments))
+    if errors:
+        details = "; ".join(error.message for error in errors)
+        raise InvalidToolArgumentsError(
+            f"Invalid arguments for {tool_name}: {details}"
+        ) from errors[0]
+
+
+def _unknown_tool_error(tool_name: str) -> UnknownToolError:
+    available = list(_tools_by_name.keys())[:10]
+    return UnknownToolError(
+        f"Tool '{tool_name}' not found. Available tools include: {available}..."
+    )
 
 
 def call_tool(tool_name: str, arguments: dict):
@@ -355,17 +386,18 @@ def call_tool(tool_name: str, arguments: dict):
         Result from the tool execution
 
     Raises:
-        ValueError: If tool not found
+        UnknownToolError: If tool not found
+        InvalidToolArgumentsError: If arguments fail the tool schema
     """
     ensure_tools_loaded()
 
     tool_name_upper = tool_name.upper()
 
     if tool_name_upper not in _tools_by_name:
-        available = list(_tools_by_name.keys())[:10]
-        raise ValueError(f"Tool '{tool_name}' not found. Available tools include: {available}...")
+        raise _unknown_tool_error(tool_name)
 
     func = _tools_by_name[tool_name_upper]
+    validate_tool_arguments(tool_name_upper, _build_parameter_schema(func), arguments)
     return func(**arguments)
 
 
@@ -396,15 +428,14 @@ def get_tool_schema(tool_name: str) -> dict:
         Dict with 'name', 'description', and 'parameters' (JSON schema)
 
     Raises:
-        ValueError: If tool not found
+        UnknownToolError: If tool not found
     """
     ensure_tools_loaded()
 
     tool_name_upper = tool_name.upper()
 
     if tool_name_upper not in _tools_by_name:
-        available = list(_tools_by_name.keys())[:10]
-        raise ValueError(f"Tool '{tool_name}' not found. Available tools include: {available}...")
+        raise _unknown_tool_error(tool_name)
 
     func = _tools_by_name[tool_name_upper]
 
@@ -426,7 +457,7 @@ def get_tool_schemas(tool_names: list[str]) -> list[dict]:
         List of dicts, each with 'name', 'description', and 'parameters' (JSON schema)
 
     Raises:
-        ValueError: If any tool not found
+        UnknownToolError: If any tool not found
     """
     ensure_tools_loaded()
 
@@ -450,6 +481,8 @@ def get_tool_schemas(tool_names: list[str]) -> list[dict]:
 
     if not_found:
         available = list(_tools_by_name.keys())[:10]
-        raise ValueError(f"Tools not found: {', '.join(not_found)}. Available tools include: {available}...")
+        raise UnknownToolError(
+            f"Tools not found: {', '.join(not_found)}. Available tools include: {available}..."
+        )
 
     return schemas
