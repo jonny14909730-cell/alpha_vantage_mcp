@@ -14,11 +14,31 @@ sam build, run this once after editing README.md so the file exists:
     python mcp/build_static_pages.py
 """
 
+import os
 from pathlib import Path
 
 MCP_DIR = Path(__file__).resolve().parent
 README_PATH = MCP_DIR.parent / "README.md"
 OUTPUT_PATH = MCP_DIR / "src" / "av_mcp" / "static" / "index.html"
+
+# Google Analytics 4 property for alphavantage.co. The README's call-to-action
+# links (get-API-key, Add to Claude, Add to ChatGPT) fire gtag events, which are
+# no-ops unless the page loads gtag.js - the Lambda-served page never did, so
+# those events were being dropped. Override with the GA_MEASUREMENT_ID env var
+# in CI; set it empty to build the page without any analytics.
+DEFAULT_GA_MEASUREMENT_ID = "G-FQEDGD32JV"
+
+GA_SNIPPET = """<script async src="https://www.googletagmanager.com/gtag/js?id={ga_id}"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){{ dataLayer.push(arguments); }}
+  gtag('js', new Date());
+  gtag('config', '{ga_id}');
+</script>"""
+
+# Stub so the README's onclick="gtag(...)" handlers don't throw when analytics
+# is disabled or gtag.js is blocked before it loads.
+GA_STUB = """<script>window.gtag = window.gtag || function () {};</script>"""
 
 # Self-contained landing shell. Mirrors web/components/PostPage.tsx + Markdown.tsx:
 # dark (rgb(45,45,45)) background, Alpha Vantage header, a green-bordered article
@@ -34,6 +54,7 @@ TEMPLATE = """<!DOCTYPE html>
 <title>Alpha Vantage MCP Server</title>
 <link rel="icon" href="https://cdn.alphavantage.co/logo.png">
 <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
+__GA_SNIPPET__
 <style>
   :root { --av-green: #42DCA3; --av-card: #1f1f1f; --av-border: rgba(74, 222, 128, 0.3); }
   * { box-sizing: border-box; }
@@ -75,7 +96,7 @@ TEMPLATE = """<!DOCTYPE html>
     padding: 1.5rem;
   }
   @media (min-width: 640px) { article { padding: 2rem; } }
-  .logo { text-align: center; margin-bottom: 3rem; }
+  .logo { text-align: center; margin-bottom: 2rem; }
   .logo img { height: 4rem; }
   .content h1 { display: none; }
   .content h2 { color: var(--av-green); font-weight: 300; font-size: 1.875rem; margin: 2rem 0 1.5rem; }
@@ -121,6 +142,16 @@ TEMPLATE = """<!DOCTYPE html>
   /* Single-line blocks: vertically center the button next to the lone line. */
   .content .code-block--single .copy-btn { top: 50%; transform: translateY(-50%); }
   .content .code-block--single .copy-btn:hover { transform: translateY(-50%) scale(1.05); }
+  /* Call-to-action buttons at the top of the README ("Add to Claude" /
+     "Add to ChatGPT"). The README carries inline styles so the buttons also
+     render standalone; these rules add the hover state inline styles can't. */
+  .content .cta-row { display: flex; flex-wrap: wrap; gap: 0.75rem; justify-content: center; margin: 0 0 2rem; }
+  .content .cta-btn { transition: transform 0.15s ease, box-shadow 0.15s ease, filter 0.15s ease; }
+  .content .cta-btn:hover {
+    text-decoration: none; transform: translateY(-1px);
+    filter: brightness(1.08); box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  }
+  .content .cta-btn svg { flex-shrink: 0; }
   .content hr { border: none; border-top: 1px solid var(--av-border); margin: 2rem 0; }
   .content table { width: 100%; border-collapse: collapse; margin: 1.5rem 0; display: block; overflow-x: auto; }
   .content th { border: 1px solid var(--av-border); color: var(--av-green); background-color: var(--av-card); padding: 0.5rem 1rem; }
@@ -346,8 +377,13 @@ def main() -> None:
     readme = README_PATH.read_text(encoding="utf-8")
     if "</script>" in readme:
         raise SystemExit("README.md contains </script>; cannot inline safely.")
+    ga_id = os.environ.get("GA_MEASUREMENT_ID", DEFAULT_GA_MEASUREMENT_ID).strip()
+    analytics = GA_SNIPPET.format(ga_id=ga_id) if ga_id else GA_STUB
+    # Substitute analytics before the README so README content can never be
+    # mistaken for the placeholder.
+    html = TEMPLATE.replace("__GA_SNIPPET__", analytics).replace("__README__", readme)
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    OUTPUT_PATH.write_text(TEMPLATE.replace("__README__", readme), encoding="utf-8")
+    OUTPUT_PATH.write_text(html, encoding="utf-8")
     print(f"Wrote {OUTPUT_PATH} ({OUTPUT_PATH.stat().st_size} bytes)")
 
 
