@@ -101,6 +101,10 @@ Replace `YOUR_API_KEY` with your actual Alpha Vantage API key.
 **Requirements:**
 - Any free or paid ChatGPT account
 
+📺 Watch the **setup tutorial**. (Click image below.)
+
+[![Connecting to the Alpha Vantage Plugin in ChatGPT](https://img.youtube.com/vi/_yNmvMPM82c/maxresdefault.jpg)](https://www.youtube.com/watch?v=_yNmvMPM82c)
+
 #### ChatGPT Remote Server Connection (Recommended, OAuth)
 
 The Alpha Vantage MCP Server is already listed in ChatGPT's official app directory. Getting started is easy:
